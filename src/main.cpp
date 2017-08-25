@@ -50,10 +50,12 @@ int main()
 
     Map map(map_file_, max_s);
     Planner planner;
-    // vector<double> lastTrajectory = nullptr;
 
-    h.onMessage([&map, &planner](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
-                                 uWS::OpCode opCode) {
+    int lane = 1;
+    double ref_vel = 49;
+
+    h.onMessage([&map, &planner, &lane, &ref_vel](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+                                                  uWS::OpCode opCode) {
         // "42" at the start of the message means there's a websocket message event.
         // The 4 signifies a websocket message
         // The 2 signifies a websocket event
@@ -91,76 +93,128 @@ int main()
                     // Sensor Fusion Data, a list of all other cars on the same side of the road.
                     auto sensor_fusion = j[1]["sensor_fusion"];
 
+                    int prev_size = previous_path_x.size();
+
+                    if (prev_size > 0)
+                    {
+                        car_s = end_path_s;
+                    }
+
+                    bool too_close = false;
+
+                    for (int i = 0; i < sensor_fusion.size(); ++i)
+                    {
+                        float d = sensor_fusion[i][6];
+                        if (d < (2 + 4 * lane + 2) && d > (2 + 4 * lane - 2))
+                        {
+                            double vx = sensor_fusion[i][3];
+                            double vy = sensor_fusion[i][4];
+                            double check_speed = sqrt(vx * vx + vy * vy);
+                            printf("car %d in my lane going %f!\n", i, check_speed);
+                            double check_car_s = sensor_fusion[i][5];
+
+                            check_car_s += (double)prev_size * 0.02 * check_speed;
+                            if (check_car_s > car_s && (check_car_s - car_s) < 30)
+                            {
+                                ref_vel = 29.5;
+                            }
+                        }
+                    }
+
                     json msgJson;
+
+                    vector<double> ptsx;
+                    vector<double> ptsy;
+
+                    double ref_x = car_x;
+                    double ref_y = car_y;
+                    double ref_yaw = deg2rad(car_yaw);
+
+                    if (prev_size < 2)
+                    {
+                        double prev_car_x = car_x - cos(car_yaw);
+                        double prev_car_y = car_y - sin(car_yaw);
+
+                        ptsx.push_back(prev_car_x);
+                        ptsx.push_back(car_x);
+
+                        ptsy.push_back(prev_car_y);
+                        ptsy.push_back(car_y);
+                    }
+                    else
+                    {
+                        ref_x = previous_path_x[prev_size - 1];
+                        ref_y = previous_path_y[prev_size - 1];
+
+                        double ref_x_prev = previous_path_x[prev_size - 2];
+                        double ref_y_prev = previous_path_y[prev_size - 2];
+                        ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
+
+                        ptsx.push_back(ref_x_prev);
+                        ptsx.push_back(ref_x);
+
+                        ptsy.push_back(ref_y_prev);
+                        ptsy.push_back(ref_y);
+                    }
+
+                    vector<double> next_wp0 = map.frenetToXY(car_s + 30, 2 + 4 * lane);
+                    vector<double> next_wp1 = map.frenetToXY(car_s + 60, 2 + 4 * lane);
+                    vector<double> next_wp2 = map.frenetToXY(car_s + 90, 2 + 4 * lane);
+
+                    ptsx.push_back(next_wp0[0]);
+                    ptsx.push_back(next_wp1[0]);
+                    ptsx.push_back(next_wp2[0]);
+
+                    ptsy.push_back(next_wp0[1]);
+                    ptsy.push_back(next_wp1[1]);
+                    ptsy.push_back(next_wp2[1]);
+
+                    for (int i = 0; i < ptsx.size(); ++i)
+                    {
+                        double shift_x = ptsx[i] - ref_x;
+                        double shift_y = ptsy[i] - ref_y;
+
+                        ptsx[i] = shift_x * cos(0 - ref_yaw) - shift_y * sin(0 - ref_yaw);
+                        ptsy[i] = shift_x * sin(0 - ref_yaw) + shift_y * cos(0 - ref_yaw);
+                    }
 
                     vector<double> next_x_vals;
                     vector<double> next_y_vals;
 
-                    double pos_x;
-                    double pos_y;
-                    double angle;
-                    const int path_size = previous_path_x.size();
-
-                    cout << "old path has " << path_size << " elemenets " << endl;
-
-                    double s_trajectory_start = car_s;
-
-                    for (int i = 0; i < 0 && i < previous_path_x.size(); ++i)
+                    for (int i = 0; i < prev_size; ++i)
                     {
                         next_x_vals.push_back(previous_path_x[i]);
                         next_y_vals.push_back(previous_path_y[i]);
-                        vector<double> sd = map.xyToFrenet(previous_path_x[i], previous_path_y[i], car_yaw);
-                        s_trajectory_start = sd[0];
                     }
 
-                    cout << " car speeeed is " << car_speed << endl;
-                    cout << "previous trajectory has " << path_size << " points " << endl;
-                    cout << "s: " << car_s << endl;
-                    cout << "s: " << end_path_s << endl;
-                    //   cout << "s_traj_start: " << s_trajectory_start << endl;
+                    tk::spline s;
+                    s.set_points(ptsx, ptsy);
+                    double target_x = 30.0;
+                    double target_y = s(target_x);
+                    double target_dist = sqrt(target_x * target_x + target_y * target_y);
+                    double x_add_on = 0;
 
-                    double dest_s = 50 - (s_trajectory_start - car_s);
-                    double target_speed = 22.35;
-                    double duration = dest_s / target_speed;
-
-                    //   cout << "duration of time is " << duration << endl;
-
-                    double interval = 0.02;
-                    vector<double> start = {s_trajectory_start, car_speed, 0};
-                    vector<double> end = {s_trajectory_start + dest_s, target_speed, 0};
-
-                    cout << " from " << car_s << ", " << car_speed << " to " << car_s + dest_s << ", "
-                         << "22.35" << endl;
-
-                    vector<double> coeffs = planner.JMT(start, end, duration);
-
-                    //   cout << "coeffs are: " << coeffs[0] << " " << coeffs[1] << " " << coeffs[2] << " " << coeffs[3] << "  " << coeffs[4] << " " << coeffs[5] << endl << endl;
-
-                    double t = 0;
-                    while (t < duration)
+                    for (int i = 1; i <= 50 - prev_size; ++i)
                     {
-                        double s_p = coeffs[0] + coeffs[1] * t + coeffs[2] * powf(t, 2) + coeffs[3] * powf(t, 3) + coeffs[4] * powf(t, 4) + coeffs[5] * powf(t, 5);
-                        vector<double> xy = map.frenetToXY(s_p, car_d);
-                        next_x_vals.push_back(xy[0]);
-                        next_y_vals.push_back(xy[1]);
-                        t += interval;
+                        double N = target_dist / (0.02 * ref_vel / 2.24);
+                        double x_point = x_add_on + target_x / N;
+                        double y_point = s(x_point);
+
+                        x_add_on = x_point;
+
+                        double x_ref = x_point;
+                        double y_ref = y_point;
+
+                        x_point = x_ref * cos(ref_yaw) - y_ref * sin(ref_yaw);
+                        y_point = x_ref * sin(ref_yaw) + y_ref * cos(ref_yaw);
+
+                        x_point += ref_x;
+                        y_point += ref_y;
+
+                        next_x_vals.push_back(x_point);
+                        next_y_vals.push_back(y_point);
                     }
 
-                    cout << "current trajectory has point count: " << next_x_vals.size() << endl;
-
-                    // lastTrajectory = coeffs;
-
-                    //   const double dist_inc = 0.2;
-                    //   for(int i = path_size; i < 50 - path_size; ++i) {
-                    //       double s_p = car_s + dist_inc * i;
-                    //       vector<double> xy = map.frenetToXY(s_p, car_d);
-                    //       next_x_vals.push_back(xy[0]);
-                    //       next_y_vals.push_back(xy[1]);
-                    //   }
-                    cout << endl
-                         << endl;
-
-                    // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
                     msgJson["next_x"] = next_x_vals;
                     msgJson["next_y"] = next_y_vals;
 
