@@ -1,11 +1,54 @@
 #include "planner.h"
 #include "spline.h"
+#include "car.h"
 #include <math.h>
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
+
+bool Planner::laneOpen(int lane, double car_s, int prev_size, vector<vector<double>> sensor_fusion) const
+{
+    for (int i = 0; i < sensor_fusion.size(); ++i)
+    {
+        vector<double> sensor_fusion_car = sensor_fusion[i];
+        Car car(sensor_fusion_car);
+
+        if (car.in_lane(lane))
+        {
+            double check_car_s = car.s;
+            check_car_s += (double)prev_size * 0.02 * car.speed();
+            if (fabs(check_car_s - car_s) < 30)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool Planner::carCloseInLane(int lane, double car_s, int prev_size, vector<vector<double>> sensor_fusion) const
+{
+    for (int i = 0; i < sensor_fusion.size(); ++i)
+    {
+        vector<double> sensor_fusion_car = sensor_fusion[i];
+        Car car(sensor_fusion_car);
+
+        if (car.in_lane(lane))
+        {
+            double check_speed = car.speed();
+            double check_car_s = car.s;
+
+            check_car_s += (double)prev_size * 0.02 * car.speed();
+            if (check_car_s > car_s && (check_car_s - car_s) < 30)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 
 vector<vector<double>> Planner::nextXYVals(
     Map map,

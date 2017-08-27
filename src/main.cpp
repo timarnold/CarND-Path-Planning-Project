@@ -90,6 +90,8 @@ int main()
                     // Sensor Fusion Data, a list of all other cars on the same side of the road.
                     auto sensor_fusion = j[1]["sensor_fusion"];
 
+                    Planner planner;
+
                     int prev_size = previous_path_x.size();
 
                     if (prev_size > 0)
@@ -97,33 +99,15 @@ int main()
                         car_s = end_path_s;
                     }
 
-                    bool too_close = false;
+                    bool car_close_ahead = planner.carCloseInLane(lane, car_s, prev_size, sensor_fusion);
 
-                    for (int i = 0; i < sensor_fusion.size(); ++i)
+                    if (car_close_ahead)
                     {
-                        vector<double> sensor_fusion_car = sensor_fusion[i];
-                        Car car(sensor_fusion_car);
-
-                        if (car.in_lane(lane))
-                        {
-                            double check_speed = car.speed();
-                            double check_car_s = car.s;
-
-                            check_car_s += (double)prev_size * 0.02 * car.speed();
-                            if (check_car_s > car_s && (check_car_s - car_s) < 30)
-                            {
-                                too_close = true;
-                            }
-                        }
-                    }
-
-                    if (too_close)
-                    {
-                        if (lane == 0 || lane == 2)
+                        if ((lane == 0 || lane == 2) && planner.laneOpen(1, car_s, prev_size, sensor_fusion))
                         {
                             lane = 1;
                         }
-                        else if (lane == 1)
+                        else if ((lane == 1) && planner.laneOpen(0, car_s, prev_size, sensor_fusion))
                         {
                             lane = 0;
                         }
@@ -136,7 +120,6 @@ int main()
 
                     json msgJson;
 
-                    Planner planner;
                     vector<vector<double>> previous_path;
                     previous_path.push_back(previous_path_x);
                     previous_path.push_back(previous_path_y);
