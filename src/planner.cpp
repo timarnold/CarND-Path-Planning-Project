@@ -1,52 +1,120 @@
 #include "planner.h"
+#include "spline.h"
+#include <math.h>
 
-using Eigen::MatrixXd;
-using Eigen::VectorXd;
+// For converting back and forth between radians and degrees.
+constexpr double pi() { return M_PI; }
+double deg2rad(double x) { return x * pi() / 180; }
+double rad2deg(double x) { return x * 180 / pi(); }
 
-vector<double> Planner::JMT(vector<double> start, vector<double> end, double T) const
+vector<vector<double>> Planner::nextXYVals(
+    Map map,
+    int lane,
+    double car_x,
+    double car_y,
+    double car_yaw,
+    double car_s,
+    double ref_vel,
+    vector<vector<double>> previous_path) const
 {
-    /*
-    Calculate the Jerk Minimizing Trajectory that connects the initial state
-    to the final state in time T.
+    vector<double> previous_path_x = previous_path[0];
+    vector<double> previous_path_y = previous_path[1];
+    int prev_size = previous_path_x.size();
 
-    INPUTS
+    vector<double> ptsx;
+    vector<double> ptsy;
 
-    start - the vehicles start location given as a length three array
-        corresponding to initial values of [s, s_dot, s_double_dot]
+    double ref_x = car_x;
+    double ref_y = car_y;
+    double ref_yaw = deg2rad(car_yaw);
 
-    end   - the desired end state for vehicle. Like "start" this is a
-        length three array.
+    if (prev_size < 2)
+    {
+        double prev_car_x = car_x - cos(ref_yaw);
+        double prev_car_y = car_y - sin(ref_yaw);
 
-    T     - The duration, in seconds, over which this maneuver should occur.
+        ptsx.push_back(prev_car_x);
+        ptsx.push_back(car_x);
 
-    OUTPUT 
-    an array of length 6, each value corresponding to a coefficent in the polynomial
-    s(t) = a_0 + a_1 * t + a_2 * t**2 + a_3 * t**3 + a_4 * t**4 + a_5 * t**5
+        ptsy.push_back(prev_car_y);
+        ptsy.push_back(car_y);
+    }
+    else
+    {
+        ref_x = previous_path_x[prev_size - 1];
+        ref_y = previous_path_y[prev_size - 1];
 
-    EXAMPLE
+        double ref_x_prev = previous_path_x[prev_size - 2];
+        double ref_y_prev = previous_path_y[prev_size - 2];
+        ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
 
-    > JMT( [0, 10, 0], [10, 10, 0], 1)
-    [0.0, 10.0, 0.0, 0.0, 0.0, 0.0]
-    */
+        ptsx.push_back(ref_x_prev);
+        ptsx.push_back(ref_x);
 
-    double si = start[0];
-    double sid = start[1];
-    double sidd = start[2];
-    double sf = end[0];
-    double sfd = end[1];
-    double sfdd = end[2];
+        ptsy.push_back(ref_y_prev);
+        ptsy.push_back(ref_y);
+    }
 
-    MatrixXd A(3, 3);
-    A <<     powf(T, 3),      powf(T, 4),      powf(T, 5),
-         3 * powf(T, 2),  4 * powf(T, 3),  5 * powf(T, 4),
-                  6 * T, 12 * powf(T, 2), 20 * powf(T, 3);
+    vector<double> next_wp0 = map.frenetToXY(car_s + 30, 2 + 4 * lane);
+    vector<double> next_wp1 = map.frenetToXY(car_s + 60, 2 + 4 * lane);
+    vector<double> next_wp2 = map.frenetToXY(car_s + 90, 2 + 4 * lane);
 
-    VectorXd b(3);
-    b[0] = sf - (si + sid * T + 0.5 * sidd * powf(T, 2));
-    b[1] = sfd - (sid + sidd * T);
-    b[2] = sfdd - sidd;
+    ptsx.push_back(next_wp0[0]);
+    ptsx.push_back(next_wp1[0]);
+    ptsx.push_back(next_wp2[0]);
 
-    VectorXd x = A.lu().solve(b);
-    return { si, sid, 0.5 * sidd, x[0], x[1], x[2] };
+    ptsy.push_back(next_wp0[1]);
+    ptsy.push_back(next_wp1[1]);
+    ptsy.push_back(next_wp2[1]);
+
+    for (int i = 0; i < ptsx.size(); ++i)
+    {
+        double shift_x = ptsx[i] - ref_x;
+        double shift_y = ptsy[i] - ref_y;
+
+        ptsx[i] = shift_x * cos(0 - ref_yaw) - shift_y * sin(0 - ref_yaw);
+        ptsy[i] = shift_x * sin(0 - ref_yaw) + shift_y * cos(0 - ref_yaw);
+    }
+
+    vector<double> next_x_vals;
+    vector<double> next_y_vals;
+
+    for (int i = 0; i < prev_size; ++i)
+    {
+        next_x_vals.push_back(previous_path_x[i]);
+        next_y_vals.push_back(previous_path_y[i]);
+    }
+
+    tk::spline s;
+    s.set_points(ptsx, ptsy);
+    double target_x = 30.0;
+    double target_y = s(target_x);
+    double target_dist = sqrt(target_x * target_x + target_y * target_y);
+    double x_add_on = 0;
+
+    for (int i = 1; i <= 50 - prev_size; ++i)
+    {
+        double N = target_dist / (0.02 * ref_vel / 2.24);
+        double x_point = x_add_on + target_x / N;
+        double y_point = s(x_point);
+
+        x_add_on = x_point;
+
+        double x_ref = x_point;
+        double y_ref = y_point;
+
+        x_point = x_ref * cos(ref_yaw) - y_ref * sin(ref_yaw);
+        y_point = x_ref * sin(ref_yaw) + y_ref * cos(ref_yaw);
+
+        x_point += ref_x;
+        y_point += ref_y;
+
+        next_x_vals.push_back(x_point);
+        next_y_vals.push_back(y_point);
+    }
+
+    vector<vector<double>> nextXY;
+    nextXY.push_back(next_x_vals);
+    nextXY.push_back(next_y_vals);
+    return nextXY;
 }
-

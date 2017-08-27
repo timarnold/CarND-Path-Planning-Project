@@ -1,14 +1,16 @@
 #ifndef _PLANNER_H
 #define _PLANNER_H
 
-#include "Eigen-3.3/Eigen/Dense"
-#include "Eigen-3.3/Eigen/LU"
 #include <vector>
+#include "map.h"
 
 using namespace std;
 
-struct Planner {
-    vector<double> JMT(vector<double> start, vector<double> end, double T) const;
+struct Planner
+{
+    vector<vector<double>> nextXYVals(
+        Map map, int lane, double car_x, double car_y, double car_yaw, double car_s, double ref_vel,
+        vector<vector<double>> previous_path) const;
 };
 
 #endif
